@@ -1,0 +1,22 @@
+# Node / React
+node_modules/
+dist/
+dist-ssr/
+*.local
+.env
+.env.*
+
+# .NET / C#
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+.vs/
+.vscode/
+.idea/
+
+# Systemowe
+.DS_Store
+Thumbs.db
