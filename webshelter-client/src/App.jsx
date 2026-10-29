@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import './App.css';
 
-const API_BASE = (import.meta.env.VITE_API_URL || 'https://localhost:7001/api').replace(/\/$/, '');
+const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:5000/api').replace(/\/$/, '');
 const STATUS_LABELS = {
     Pending: 'Oczekujące',
     UnderReview: 'W trakcie rozpatrywania',
