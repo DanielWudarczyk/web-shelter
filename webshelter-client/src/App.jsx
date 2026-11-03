@@ -64,6 +64,7 @@ function prettyDate(value) {
 }
 
 export default function App() {
+    const [registerMode, setRegisterMode] = useState(false);
     const [session, setSession] = useState(readSession);
     const [screen, setScreen] = useState(() => readSession()?.user?.role?.toLowerCase() === 'admin' ? 'adminDashboard' : 'animals');
     const [loading, setLoading] = useState(false);
@@ -98,7 +99,6 @@ export default function App() {
     };
 
     useEffect(() => {
-        if (!session) return;
         let active = true;
         const load = async () => {
             setLoading(true);
@@ -137,6 +137,7 @@ export default function App() {
     async function handleLogin(event) {
         event.preventDefault();
         setLoading(true); setError('');
+        
         const form = new FormData(event.currentTarget);
         try {
             const data = await api('/auth/login', {
@@ -147,11 +148,62 @@ export default function App() {
             const nextSession = { token: data.token, user: data.user };
             localStorage.setItem('adoptuj-session', JSON.stringify(nextSession));
             setSession(nextSession);
-            setScreen(String(data.user.role).toLowerCase() === 'admin' ? 'adminDashboard' : 'animals');
+            setScreen(
+                String(data.user.role).toLowerCase() === 'admin'
+                    ? 'adminDashboard'
+                    : selectedAnimal
+                        ? 'adoptionForm'
+                        : 'animals'
+            );
             setNotice('Zalogowano pomyślnie.');
         } catch (e) {
             setError(e.message || 'Logowanie nie powiodło się.');
         } finally { setLoading(false); }
+    }
+
+    async function handleRegister(event) {
+        event.preventDefault();
+        setLoading(true);
+        setError('');
+
+        const form = new FormData(event.currentTarget);
+
+        try {
+            const data = await api('/auth/register', {
+                method: 'POST',
+                body: JSON.stringify({
+                    firstName: form.get('firstName'),
+                    lastName: form.get('lastName'),
+                    email: form.get('email'),
+                    password: form.get('password'),
+                }),
+            });
+
+            if (!data?.token || !data?.user) {
+                throw new Error('Nieprawidłowa odpowiedź serwera.');
+            }
+
+            const nextSession = {
+                token: data.token,
+                user: data.user,
+            };
+
+            localStorage.setItem(
+                'adoptuj-session',
+                JSON.stringify(nextSession)
+            );
+
+            setSession(nextSession);
+            setRegisterMode(false);
+
+            setScreen(selectedAnimal ? 'adoptionForm' : 'animals');
+            setNotice('Konto zostało utworzone.');
+
+        } catch (e) {
+            setError(e.message || 'Rejestracja nie powiodła się.');
+        } finally {
+            setLoading(false);
+        }
     }
 
     function logout() {
@@ -173,6 +225,11 @@ export default function App() {
 
     async function submitAdoption(event) {
         event.preventDefault();
+        if (!session?.token) {
+            setRegisterMode(false);
+            setScreen('auth');
+            return;
+        }
         setLoading(true); setError(''); setNotice('');
         try {
             await request('/adoption-applications', {
@@ -264,29 +321,171 @@ export default function App() {
         applicationDetail: 'Szczegóły zgłoszenia', adminStatistics: 'Statystyki',
     }[screen] || 'Adoptuj'), [screen, editingAnimal]);
 
-    if (!session) {
-        return <main className="login-page">
-            <form className="login-card" onSubmit={handleLogin}>
-                <div className="brand"><span className="brand-icon">🐾</span><span>Adoptuj</span></div>
-                <p className="eyebrow">SCHRONISKO · NOWY POCZĄTEK</p>
-                <h1>Witaj ponownie!</h1>
-                <p className="muted">Zaloguj się, aby znaleźć swojego przyjaciela.</p>
-                {error && <div className="alert error">{error}</div>}
+    if (screen === 'auth') {
+    return (
+        <main className="login-page">
+            <form
+                className="login-card"
+                onSubmit={registerMode ? handleRegister : handleLogin}
+            >
+                <div className="brand">
+                    <span className="brand-icon">🐾</span>
+                    <span>Adoptuj</span>
+                </div>
+
+                <p className="eyebrow">
+                    SCHRONISKO · NOWY POCZĄTEK
+                </p>
+
+                <h1>
+                    {registerMode ? 'Utwórz konto' : 'Zaloguj się'}
+                </h1>
+
+                <p className="muted">
+                    {registerMode
+                        ? 'Zarejestruj się, aby składać wnioski adopcyjne.'
+                        : 'Zaloguj się, aby złożyć wniosek adopcyjny.'}
+                </p>
+
+                {error && (
+                    <div className="alert error" role="alert">
+                        {error}
+                    </div>
+                )}
+
+                {registerMode && (
+                    <>
+                        <label htmlFor="firstName">Imię</label>
+                        <input
+                            id="firstName"
+                            name="firstName"
+                            required
+                            maxLength={100}
+                        />
+
+                        <label htmlFor="lastName">Nazwisko</label>
+                        <input
+                            id="lastName"
+                            name="lastName"
+                            required
+                            maxLength={100}
+                        />
+                    </>
+                )}
+
                 <label htmlFor="email">Adres e-mail</label>
-                <input id="email" name="email" type="email" autoComplete="username" placeholder="jan@example.com" required />
+                <input
+                    id="email"
+                    name="email"
+                    type="email"
+                    required
+                    autoComplete="email"
+                />
+
                 <label htmlFor="password">Hasło</label>
-                <input id="password" name="password" type="password" autoComplete="current-password" placeholder="Wpisz hasło" required />
-                <button className="button primary full" disabled={loading}>{loading ? 'Logowanie…' : 'Zaloguj się'}</button>
-                <p className="small-note">Dostęp wymaga konta utworzonego w backendzie. Rejestrację możesz dodać jako osobny etap.</p>
+                <input
+                    id="password"
+                    name="password"
+                    type="password"
+                    required
+                    minLength={registerMode ? 8 : undefined}
+                    autoComplete={
+                        registerMode ? 'new-password' : 'current-password'
+                    }
+                />
+
+                <button
+                    type="submit"
+                    className="button primary full"
+                    disabled={loading}
+                >
+                    {loading
+                        ? 'Przetwarzanie…'
+                        : registerMode
+                            ? 'Zarejestruj się'
+                            : 'Zaloguj się'}
+                </button>
+
+                <p className="small-note">
+                    {registerMode ? 'Masz już konto?' : 'Nie masz konta?'}
+                    {' '}
+                    <button
+                        type="button"
+                        className="button ghost"
+                        onClick={() => {
+                            setRegisterMode(!registerMode);
+                            setError('');
+                        }}
+                    >
+                        {registerMode ? 'Zaloguj się' : 'Zarejestruj się'}
+                    </button>
+                </p>
+
+                <button
+                    type="button"
+                    className="button secondary full"
+                    onClick={() => {
+                        setError('');
+                        setScreen(selectedAnimal ? 'animalDetail' : 'animals');
+                    }}
+                >
+                    Przeglądaj bez logowania
+                </button>
             </form>
-        </main>;
-    }
+        </main>
+    );
+}
 
     return <div className="app-shell">
         <header className="topbar">
             <button className="brand brand-button" onClick={() => go(isAdmin ? 'adminDashboard' : 'animals')}><span className="brand-icon">🐾</span><span>Adoptuj</span></button>
-            {!isAdmin && <nav className="user-nav"><button className={screen === 'animals' || screen === 'animalDetail' || screen === 'adoptionForm' ? 'nav-item selected' : 'nav-item'} onClick={() => go('animals')}>Zwierzęta</button><button className={screen === 'myApplications' || screen === 'applicationDetail' ? 'nav-item selected' : 'nav-item'} onClick={() => go('myApplications')}>Moje zgłoszenia</button></nav>}
-            <div className="topbar-right"><span className="role-chip">{isAdmin ? 'Administrator' : 'Użytkownik'}</span><span className="user-name">{session.user.firstName || session.user.email}</span><button className="button ghost" onClick={logout}>Wyloguj</button></div>
+            {!isAdmin && <nav className="user-nav"><button className={screen === 'animals' || screen === 'animalDetail' || screen === 'adoptionForm' ? 'nav-item selected' : 'nav-item'} onClick={() => go('animals')}>Zwierzęta</button><button className={screen === 'myApplications' || screen === 'applicationDetail' ? 'nav-item selected' : 'nav-item'} onClick={() => {
+                if (!session) {
+                    setRegisterMode(false);
+                    setScreen('auth');
+                } else {
+                    go('myApplications');
+                }
+            }}>Moje zgłoszenia</button></nav>}
+            <div className="topbar-right">
+                {session ? (
+                    <>
+                        <span className="role-chip">
+                            {isAdmin ? 'Administrator' : 'Użytkownik'}
+                        </span>
+
+                        <span className="user-name">
+                            {session.user.firstName || session.user.email}
+                        </span>
+
+                        <button className="button ghost" onClick={logout}>
+                            Wyloguj
+                        </button>
+                    </>
+                ) : (
+                    <>
+                        <button
+                            className="button ghost"
+                            onClick={() => {
+                                setRegisterMode(false);
+                                setScreen('auth');
+                            }}
+                        >
+                            Zaloguj się
+                        </button>
+
+                        <button
+                            className="button primary"
+                            onClick={() => {
+                                setRegisterMode(true);
+                                setScreen('auth');
+                            }}
+                        >
+                            Zarejestruj się
+                        </button>
+                    </>
+                )}
+            </div>
         </header>
 
         <div className={`layout ${isAdmin ? 'admin-layout' : ''}`}>
@@ -312,7 +511,28 @@ export default function App() {
 
                 {screen === 'animalDetail' && selectedAnimal && <>
                     <button className="back-link" onClick={() => go('animals')}>← Wróć do zwierząt</button>
-                    <section className="detail-card"><img className="detail-photo" src={imageFor(selectedAnimal) || undefined} alt={selectedAnimal.name} onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }} /><div className="detail-body"><span className="pill">{selectedAnimal.species === 'Dog' ? 'Pies' : selectedAnimal.species === 'Cat' ? 'Kot' : selectedAnimal.species}</span><h2>{selectedAnimal.name}</h2><div className="facts"><span>🎂 {selectedAnimal.age} {Number(selectedAnimal.age) === 1 ? 'rok' : 'lat'}</span><span>{selectedAnimal.gender === 'Male' ? '♂ Samiec' : selectedAnimal.gender === 'Female' ? '♀ Samica' : selectedAnimal.gender}</span></div><h3>O mnie</h3><p>{selectedAnimal.description || 'Schronisko wkrótce uzupełni opis tego zwierzęcia.'}</p><h3>Mój charakter</h3><p>{selectedAnimal.traits || 'Poznaj mnie podczas wizyty w schronisku.'}</p>{selectedAnimal.isAvailable !== false ? <button className="button primary" onClick={() => { setApplicationForm({ phone: '', homeType: '', hasGarden: '', reason: '' }); setScreen('adoptionForm'); }}>♥ Chcę adoptować</button> : <div className="alert">To zwierzę nie jest obecnie dostępne do adopcji.</div>}</div></section>
+                    <section className="detail-card"><img className="detail-photo" src={imageFor(selectedAnimal) || undefined} alt={selectedAnimal.name} onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }} /><div className="detail-body"><span className="pill">{selectedAnimal.species === 'Dog' ? 'Pies' : selectedAnimal.species === 'Cat' ? 'Kot' : selectedAnimal.species}</span><h2>{selectedAnimal.name}</h2><div className="facts"><span>🎂 {selectedAnimal.age} {Number(selectedAnimal.age) === 1 ? 'rok' : 'lat'}</span><span>{selectedAnimal.gender === 'Male' ? '♂ Samiec' : selectedAnimal.gender === 'Female' ? '♀ Samica' : selectedAnimal.gender}</span></div><h3>O mnie</h3><p>{selectedAnimal.description || 'Schronisko wkrótce uzupełni opis tego zwierzęcia.'}</p><h3>Mój charakter</h3><p>{selectedAnimal.traits || 'Poznaj mnie podczas wizyty w schronisku.'}</p>{selectedAnimal.isAvailable !== false ? 
+                    <button
+                        className="button primary"
+                        onClick={() => {
+                            setApplicationForm({
+                                phone: '',
+                                homeType: '',
+                                hasGarden: '',
+                                reason: ''
+                            });
+
+                            if (!session) {
+                                setRegisterMode(false);
+                                setScreen('auth');
+                                return;
+                            }
+
+                            setScreen('adoptionForm');
+                        }}
+                    >
+                        ♥ Chcę adoptować
+                    </button> : <div className="alert">To zwierzę nie jest obecnie dostępne do adopcji.</div>}</div></section>
                 </>}
 
                 {screen === 'adoptionForm' && selectedAnimal && <>
