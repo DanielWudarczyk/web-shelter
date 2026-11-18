@@ -22,10 +22,14 @@ builder.Services.AddDbContext<AppDbContext>(opt => opt.UseNpgsql(connectionStrin
 builder.Services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
 builder.Services.AddScoped<TokenService>();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(o => o.TokenValidationParameters = new TokenValidationParameters {
-        ValidateIssuer = true, ValidIssuer = builder.Configuration["Jwt:Issuer"],
-        ValidateAudience = true, ValidAudience = builder.Configuration["Jwt:Audience"],
-        ValidateLifetime = true, ValidateIssuerSigningKey = true,
+    .AddJwtBearer(o => o.TokenValidationParameters = new TokenValidationParameters
+    {
+        ValidateIssuer = true,
+        ValidIssuer = builder.Configuration["Jwt:Issuer"],
+        ValidateAudience = true,
+        ValidAudience = builder.Configuration["Jwt:Audience"],
+        ValidateLifetime = true,
+        ValidateIssuerSigningKey = true,
         IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(key)),
         ClockSkew = TimeSpan.FromMinutes(1)
     });
@@ -113,33 +117,81 @@ animals.MapDelete("/{id:int}", async (int id, AppDbContext db) => {
 animals.MapPost("/{id:int}/images", async (int id, IFormFile file, AppDbContext db, IWebHostEnvironment env, HttpContext http) => {
     var pet = await db.Pets.Include(p => p.Images).SingleOrDefaultAsync(p => p.Id == id);
     if (pet is null) return Results.NotFound();
+    if (pet.Images.Count >= 10)
+    {
+        return Results.BadRequest(new
+        {
+            message = "Zwierzę może mieć maksymalnie 10 zdjęć."
+        });
+    }
     if (file.Length < 12 || file.Length > 5 * 1024 * 1024) return Results.BadRequest(new { message = "Zdjęcie musi mieć od 1 B do 5 MB." });
     var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
     if (extension is not (".jpg" or ".jpeg" or ".png" or ".webp")) return Results.BadRequest(new { message = "Dopuszczalne formaty: JPG, PNG, WEBP." });
     var signature = new byte[12];
     await using (var stream = file.OpenReadStream()) { await stream.ReadExactlyAsync(signature.AsMemory(0, (int)Math.Min(12, file.Length))); }
-    bool valid = extension switch {
+    bool valid = extension switch
+    {
         ".jpg" or ".jpeg" => signature[0] == 0xFF && signature[1] == 0xD8,
         ".png" => signature.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }),
         ".webp" => Encoding.ASCII.GetString(signature, 0, 4) == "RIFF" && Encoding.ASCII.GetString(signature, 8, 4) == "WEBP",
-        _ => false };
+        _ => false
+    };
     if (!valid) return Results.BadRequest(new { message = "Plik nie jest poprawnym obrazem." });
     var uploadDirectory = Path.Combine(env.ContentRootPath, "wwwroot", "uploads"); Directory.CreateDirectory(uploadDirectory);
     var name = $"{Guid.NewGuid():N}{extension}";
     await using (var output = File.Create(Path.Combine(uploadDirectory, name))) await file.CopyToAsync(output);
-    var photo = new PetImage { PetId = id, Url = $"{http.Request.Scheme}://{http.Request.Host}/uploads/{name}", IsMain = !pet.Images.Any() };
+    var photo = new PetImage { PetId = id, Url = $"{http.Request.Scheme}://{http.Request.Host}/uploads/{name}", IsMain = !pet.Images.Any(), SortOrder = pet.Images.Count == 0 ? 0 : pet.Images.Max(i => i.SortOrder) + 1 };
     db.PetImages.Add(photo); await db.SaveChangesAsync();
-    return Results.Created($"/api/animals/{id}", new { photo.Id, photo.Url, photo.IsMain });
+    return Results.Created($"/api/animals/{id}", new { photo.Id, photo.Url, photo.IsMain, photo.SortOrder });
 }).RequireAuthorization("admin").DisableAntiforgery();
 animals.MapDelete("/{id:int}/images/{imageId:int}", async (int id, int imageId, AppDbContext db, IWebHostEnvironment env) => {
     var image = await db.PetImages.SingleOrDefaultAsync(x => x.PetId == id && x.Id == imageId);
     if (image is null) return Results.NotFound();
-    db.PetImages.Remove(image); await db.SaveChangesAsync();
-    if (Uri.TryCreate(image.Url, UriKind.Absolute, out var uri) && uri.AbsolutePath.StartsWith("/uploads/")) {
+    var wasMain = image.IsMain;
+    db.PetImages.Remove(image);
+    await db.SaveChangesAsync();
+    if (wasMain)
+    {
+        var replacement = await db.PetImages.Where(x => x.PetId == id)
+            .OrderBy(x => x.SortOrder).ThenBy(x => x.Id).FirstOrDefaultAsync();
+        if (replacement is not null)
+        {
+            replacement.IsMain = true;
+            await db.SaveChangesAsync();
+        }
+    }
+    if (Uri.TryCreate(image.Url, UriKind.Absolute, out var uri) && uri.AbsolutePath.StartsWith("/uploads/"))
+    {
         var local = Path.Combine(env.ContentRootPath, "wwwroot", "uploads", Path.GetFileName(uri.AbsolutePath));
         if (File.Exists(local)) File.Delete(local);
     }
     return Results.NoContent();
+}).RequireAuthorization("admin");
+
+
+// Zarządzanie galerią: kolejność i zdjęcie główne.
+animals.MapPut("/{id:int}/images/order", async (int id, ImageOrderRequest input, AppDbContext db) => {
+    var pet = await db.Pets.Include(p => p.Images).SingleOrDefaultAsync(p => p.Id == id);
+    if (pet is null) return Results.NotFound(new { message = "Nie znaleziono zwierzęcia." });
+    if (input.ImageIds is null || input.ImageIds.Length != pet.Images.Count ||
+        !input.ImageIds.OrderBy(x => x).SequenceEqual(pet.Images.Select(x => x.Id).OrderBy(x => x)))
+        return Results.BadRequest(new { message = "Należy przekazać wszystkie ID zdjęć zwierzęcia bez duplikatów." });
+    for (var i = 0; i < input.ImageIds.Length; i++)
+    {
+        pet.Images.Single(x => x.Id == input.ImageIds[i]).SortOrder = i;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Zapisano kolejność zdjęć." });
+}).RequireAuthorization("admin");
+
+animals.MapPut("/{id:int}/images/{imageId:int}/main", async (int id, int imageId, AppDbContext db) => {
+    var pet = await db.Pets.Include(p => p.Images).SingleOrDefaultAsync(p => p.Id == id);
+    if (pet is null) return Results.NotFound(new { message = "Nie znaleziono zwierzęcia." });
+    var chosen = pet.Images.SingleOrDefault(i => i.Id == imageId);
+    if (chosen is null) return Results.NotFound(new { message = "Nie znaleziono zdjęcia." });
+    foreach (var image in pet.Images) image.IsMain = image.Id == imageId;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Zapisano zdjęcie główne." });
 }).RequireAuthorization("admin");
 
 var applications = app.MapGroup("/api/adoption-applications").RequireAuthorization();
@@ -186,7 +238,8 @@ applications.MapPatch("/{id:int}/status", async (int id, StatusRequest input, Ap
     if (input.Status == "Approved" && a.Pet.Status != "dostepny" && a.Status != "Approved")
         return Results.Conflict(new { message = "Zwierzę nie jest dostępne." });
     a.Status = input.Status;
-    if (input.Status == "Approved") {
+    if (input.Status == "Approved")
+    {
         a.Pet.Status = "adoptowany";
         var others = await db.AdoptionApplications.Where(x => x.PetId == a.PetId && x.Id != a.Id && (x.Status == "Pending" || x.Status == "UnderReview")).ToListAsync();
         foreach (var other in others) other.Status = "Rejected";
@@ -194,8 +247,10 @@ applications.MapPatch("/{id:int}/status", async (int id, StatusRequest input, Ap
     await db.SaveChangesAsync(); return Results.Ok(new { a.Id, a.Status });
 }).RequireAuthorization("admin");
 
-app.MapGet("/api/admin/statistics", async (AppDbContext db) => Results.Ok(new {
-    AnimalsTotal = await db.Pets.CountAsync(), AnimalsAvailable = await db.Pets.CountAsync(p => p.Status == "dostepny"),
+app.MapGet("/api/admin/statistics", async (AppDbContext db) => Results.Ok(new
+{
+    AnimalsTotal = await db.Pets.CountAsync(),
+    AnimalsAvailable = await db.Pets.CountAsync(p => p.Status == "dostepny"),
     ApplicationsTotal = await db.AdoptionApplications.CountAsync(),
     ApplicationsApproved = await db.AdoptionApplications.CountAsync(a => a.Status == "Approved"),
     ApplicationsPending = await db.AdoptionApplications.CountAsync(a => a.Status == "Pending"),
@@ -208,22 +263,20 @@ app.Run();
 
 static int UserId(ClaimsPrincipal user) => int.Parse(user.FindFirstValue(ClaimTypes.NameIdentifier)!);
 static IQueryable<AdoptionApplication> ApplicationQuery(AppDbContext db) => db.AdoptionApplications.Include(a => a.Pet).Include(a => a.User).AsNoTracking();
-static bool Valid<T>(T obj, out string? error) {
+static bool Valid<T>(T obj, out string? error)
+{
     var results = new List<System.ComponentModel.DataAnnotations.ValidationResult>();
     var ok = System.ComponentModel.DataAnnotations.Validator.TryValidateObject(obj!, new System.ComponentModel.DataAnnotations.ValidationContext(obj!), results, true);
     error = ok ? null : results.FirstOrDefault()?.ErrorMessage; return ok;
 }
 static bool ValidAnimal(AnimalRequest a) => !string.IsNullOrWhiteSpace(a.Name) && !string.IsNullOrWhiteSpace(a.Description)
     && (a.Species is "Dog" or "Cat" or "Other") && (a.Gender is "Male" or "Female");
-static void ApplyAnimal(Pet pet, AnimalRequest input) {
+static void ApplyAnimal(Pet pet, AnimalRequest input)
+{
     pet.Name = input.Name.Trim(); pet.Species = input.Species; pet.Breed = input.Breed?.Trim() ?? "";
     pet.AgeInMonths = input.Age * 12; pet.Gender = input.Gender;
     pet.Description = input.Description.Trim(); pet.Traits = input.Traits?.Trim() ?? "";
     pet.Status = input.IsAvailable ? "dostepny" : "niedostepny";
-    // URL z formularza jest obsługiwany w istniejącym modelu PetImage.
-    var main = pet.Images.FirstOrDefault(i => i.IsMain) ?? pet.Images.FirstOrDefault();
-    if (!string.IsNullOrWhiteSpace(input.PhotoUrl)) {
-        if (main is null) pet.Images.Add(new PetImage { Url = input.PhotoUrl.Trim(), IsMain = true });
-        else main.Url = input.PhotoUrl.Trim();
-    } else if (main is not null) pet.Images.Remove(main);
 }
+
+public record ImageOrderRequest(int[] ImageIds);

@@ -1109,3 +1109,64 @@ tbody tr:hover {
         padding: 8px 10px
     }
 }
+
+/* Galeria zdjęć zwierzęcia */
+
+.gallery-section {
+    margin-top: 24px;
+}
+
+.photo-gallery {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 12px;
+}
+
+.gallery-thumb {
+    padding: 4px;
+    border: 2px solid transparent;
+    border-radius: 10px;
+    background: transparent;
+    cursor: pointer;
+}
+
+.gallery-thumb.active {
+    border-color: #13845d;
+}
+
+.gallery-thumb img {
+    width: 110px;
+    height: 85px;
+    object-fit: cover;
+    border-radius: 7px;
+    display: block;
+}
+
+/* Lista plików przed przesłaniem */
+
+.selected-file-list {
+    display: grid;
+    gap: 10px;
+    margin-top: 12px;
+}
+
+.selected-file {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+/* Zarządzanie zdjęciami w panelu administratora */
+.admin-photo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin-top: 12px; }
+.admin-photo { position: relative; overflow: hidden; border: 1px solid #dedede; border-radius: 12px; background: #fff; }
+.admin-photo > img { display: block; width: 100%; height: 160px; object-fit: cover; }
+.main-photo-label { position: absolute; top: 8px; left: 8px; padding: 5px 9px; color: white; background: #14845c; border-radius: 6px; font-weight: 600; font-size: 12px; }
+.admin-photo-actions { display: flex; flex-direction: column; gap: 9px; padding: 12px; }
+.photo-order-controls { display: flex; gap: 8px; }
+.photo-order-controls button { flex: 1; padding: 8px; border: 1px solid #ccc; border-radius: 6px; cursor: pointer; background: #f7f7f7; }
+.photo-order-controls button:disabled { cursor: not-allowed; opacity: 0.45; }
+.selected-file-list { display: grid; gap: 8px; margin-top: 10px; }
+.selected-file { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
