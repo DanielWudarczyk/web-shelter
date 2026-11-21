@@ -46,15 +46,69 @@ app.UseAuthorization();
 if (app.Environment.IsDevelopment()) app.MapOpenApi();
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok" }));
 
+// Jednorazowa migracja starych zdjęć z folderu wwwroot/uploads do Neon.
+// Uruchom: dotnet run --launch-profile http -- --migrate-local-images
+if (args.Contains("--migrate-local-images", StringComparer.OrdinalIgnoreCase))
+{
+    using var migrationScope = app.Services.CreateScope();
+    var db = migrationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+    var pending = await db.PetImages
+        .Where(i => i.ImageData == null)
+        .OrderBy(i => i.Id)
+        .ToListAsync();
+    int migrated = 0, missing = 0;
+    foreach (var photo in pending)
+    {
+        string pathname;
+        if (Uri.TryCreate(photo.Url, UriKind.Absolute, out var originalUri))
+            pathname = originalUri.AbsolutePath;
+        else pathname = photo.Url;
+        if (!pathname.StartsWith("/uploads/", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine($"POMINIĘTO ID={photo.Id}: URL nie wskazuje na /uploads/");
+            missing++;
+            continue;
+        }
+        var filename = Path.GetFileName(pathname);
+        if (string.IsNullOrWhiteSpace(filename)) { missing++; continue; }
+        var localPath = Path.Combine(app.Environment.ContentRootPath, "wwwroot", "uploads", filename);
+        if (!File.Exists(localPath))
+        {
+            Console.WriteLine($"BRAK PLIKU ID={photo.Id}: {filename}");
+            missing++;
+            continue;
+        }
+        var bytes = await File.ReadAllBytesAsync(localPath);
+        var extension = Path.GetExtension(filename).ToLowerInvariant();
+        if (bytes.Length < 12 || !TryImageContentType(bytes, extension, out var type))
+        {
+            Console.WriteLine($"POMINIĘTO ID={photo.Id}: błędny typ obrazu");
+            missing++;
+            continue;
+        }
+        photo.ImageData = bytes;
+        photo.ContentType = type;
+        photo.Url = $"/api/animals/{photo.PetId}/images/{photo.Id}/file";
+        await db.SaveChangesAsync();
+        migrated++;
+        Console.WriteLine($"PRZENIESIONO ID={photo.Id} ({bytes.Length} B)");
+    }
+    Console.WriteLine($"Migracja zakończona: przeniesiono {migrated}; wymagają uwagi {missing}.");
+    return;
+}
+
 // Baza Neon: EnsureCreated tylko dla nowej, pustej bazy. Istniejących tabel nie modyfikujemy automatycznie.
-using (var scope = app.Services.CreateScope()) {
+using (var scope = app.Services.CreateScope())
+{
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     if (app.Configuration.GetValue("Database:EnsureCreated", true)) await db.Database.EnsureCreatedAsync();
     var adminEmail = app.Configuration["SeedAdmin:Email"]?.Trim().ToLowerInvariant();
     var adminPassword = app.Configuration["SeedAdmin:Password"];
-    if (!string.IsNullOrEmpty(adminEmail) && !string.IsNullOrEmpty(adminPassword)) {
+    if (!string.IsNullOrEmpty(adminEmail) && !string.IsNullOrEmpty(adminPassword))
+    {
         if (adminPassword.Length < 8) throw new InvalidOperationException("Hasło administratora musi mieć min. 8 znaków.");
-        if (!await db.Users.AnyAsync(u => u.Email == adminEmail)) {
+        if (!await db.Users.AnyAsync(u => u.Email == adminEmail))
+        {
             var admin = new User { Email = adminEmail, FirstName = "Administrator", LastName = "Schroniska", Role = "admin" };
             admin.PasswordHash = scope.ServiceProvider.GetRequiredService<IPasswordHasher<User>>().HashPassword(admin, adminPassword);
             db.Users.Add(admin); await db.SaveChangesAsync();
@@ -83,15 +137,15 @@ auth.MapPost("/login", async (LoginRequest input, AppDbContext db, IPasswordHash
 
 var animals = app.MapGroup("/api/animals");
 animals.MapGet("/", async (AppDbContext db, string? search, string? species, bool availableOnly = true) => {
-    var q = db.Pets.Include(p => p.Images).AsNoTracking().AsQueryable();
+    var q = db.Pets.AsNoTracking().AsQueryable();
     if (availableOnly) q = q.Where(p => p.Status == "dostepny");
     if (!string.IsNullOrWhiteSpace(species)) q = q.Where(p => p.Species == species);
     if (!string.IsNullOrWhiteSpace(search)) q = q.Where(p => EF.Functions.ILike(p.Name, $"%{search}%") || EF.Functions.ILike(p.Description, $"%{search}%"));
-    var data = await q.OrderBy(p => p.Id).ToListAsync();
+    var data = await AnimalMetadataQuery(q.OrderBy(p => p.Id)).ToListAsync();
     return Results.Ok(data.Select(ApiDtos.Animal));
 });
 animals.MapGet("/{id:int}", async (int id, AppDbContext db) => {
-    var pet = await db.Pets.Include(p => p.Images).AsNoTracking().SingleOrDefaultAsync(p => p.Id == id);
+    var pet = await AnimalMetadataQuery(db.Pets.AsNoTracking().Where(p => p.Id == id)).SingleOrDefaultAsync();
     return pet is null ? Results.NotFound(new { message = "Nie znaleziono zwierzęcia." }) : Results.Ok(ApiDtos.Animal(pet));
 });
 animals.MapPost("/", async (AnimalRequest input, AppDbContext db) => {
@@ -113,38 +167,58 @@ animals.MapDelete("/{id:int}", async (int id, AppDbContext db) => {
         return Results.Conflict(new { message = "Zwierzę ma historię zgłoszeń. Ustaw je jako niedostępne zamiast usuwać." });
     db.Pets.Remove(pet); await db.SaveChangesAsync(); return Results.NoContent();
 }).RequireAuthorization("admin");
-// Dodawanie pliku ze zdjęciem i udostępnienie go z wwwroot/uploads.
-animals.MapPost("/{id:int}/images", async (int id, IFormFile file, AppDbContext db, IWebHostEnvironment env, HttpContext http) => {
-    var pet = await db.Pets.Include(p => p.Images).SingleOrDefaultAsync(p => p.Id == id);
-    if (pet is null) return Results.NotFound();
-    if (pet.Images.Count >= 10)
-    {
-        return Results.BadRequest(new
-        {
-            message = "Zwierzę może mieć maksymalnie 10 zdjęć."
-        });
-    }
-    if (file.Length < 12 || file.Length > 5 * 1024 * 1024) return Results.BadRequest(new { message = "Zdjęcie musi mieć od 1 B do 5 MB." });
+// Odczyt oryginalnego zdjęcia przechowywanego w PostgreSQL (bytea).
+// API zwraca metadane osobno, żeby lista zwierząt nie pobierała całych plików.
+animals.MapGet("/{id:int}/images/{imageId:int}/file", async (int id, int imageId, AppDbContext db) => {
+    var image = await db.PetImages.AsNoTracking()
+        .Where(x => x.PetId == id && x.Id == imageId)
+        .Select(x => new { x.ImageData, x.ContentType })
+        .SingleOrDefaultAsync();
+    if (image?.ImageData is null || image.ImageData.Length == 0) return Results.NotFound();
+    return Results.File(image.ImageData, image.ContentType ?? "application/octet-stream",
+        enableRangeProcessing: true);
+}).AllowAnonymous();
+
+// Dodawanie zdjęć: bajty są przechowywane w Neon, bez plików w wwwroot/uploads.
+animals.MapPost("/{id:int}/images", async (int id, IFormFile file, AppDbContext db) => {
+    if (!await db.Pets.AnyAsync(p => p.Id == id)) return Results.NotFound();
+    var count = await db.PetImages.CountAsync(i => i.PetId == id);
+    if (count >= 10) return Results.BadRequest(new { message = "Zwierzę może mieć maksymalnie 10 zdjęć." });
+    if (file.Length < 12 || file.Length > 5 * 1024 * 1024)
+        return Results.BadRequest(new { message = "Zdjęcie musi mieć od 12 bajtów do 5 MB." });
+
     var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
-    if (extension is not (".jpg" or ".jpeg" or ".png" or ".webp")) return Results.BadRequest(new { message = "Dopuszczalne formaty: JPG, PNG, WEBP." });
-    var signature = new byte[12];
-    await using (var stream = file.OpenReadStream()) { await stream.ReadExactlyAsync(signature.AsMemory(0, (int)Math.Min(12, file.Length))); }
-    bool valid = extension switch
+    if (extension is not (".jpg" or ".jpeg" or ".png" or ".webp"))
+        return Results.BadRequest(new { message = "Dopuszczalne formaty: JPG, PNG, WEBP." });
+
+    byte[] bytes;
+    await using (var buffer = new MemoryStream())
     {
-        ".jpg" or ".jpeg" => signature[0] == 0xFF && signature[1] == 0xD8,
-        ".png" => signature.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }),
-        ".webp" => Encoding.ASCII.GetString(signature, 0, 4) == "RIFF" && Encoding.ASCII.GetString(signature, 8, 4) == "WEBP",
-        _ => false
+        await file.CopyToAsync(buffer);
+        bytes = buffer.ToArray();
+    }
+    if (!TryImageContentType(bytes, extension, out var contentType))
+        return Results.BadRequest(new { message = "Niepoprawny format pliku graficznego." });
+
+    var order = await db.PetImages.Where(i => i.PetId == id)
+        .Select(i => (int?)i.SortOrder).MaxAsync() ?? -1;
+    var photo = new PetImage
+    {
+        PetId = id,
+        Url = "", // uzupełnimy po otrzymaniu ID
+        ImageData = bytes,
+        ContentType = contentType,
+        IsMain = count == 0,
+        SortOrder = order + 1
     };
-    if (!valid) return Results.BadRequest(new { message = "Plik nie jest poprawnym obrazem." });
-    var uploadDirectory = Path.Combine(env.ContentRootPath, "wwwroot", "uploads"); Directory.CreateDirectory(uploadDirectory);
-    var name = $"{Guid.NewGuid():N}{extension}";
-    await using (var output = File.Create(Path.Combine(uploadDirectory, name))) await file.CopyToAsync(output);
-    var photo = new PetImage { PetId = id, Url = $"{http.Request.Scheme}://{http.Request.Host}/uploads/{name}", IsMain = !pet.Images.Any(), SortOrder = pet.Images.Count == 0 ? 0 : pet.Images.Max(i => i.SortOrder) + 1 };
-    db.PetImages.Add(photo); await db.SaveChangesAsync();
-    return Results.Created($"/api/animals/{id}", new { photo.Id, photo.Url, photo.IsMain, photo.SortOrder });
+    db.PetImages.Add(photo);
+    await db.SaveChangesAsync();
+    photo.Url = $"/api/animals/{id}/images/{photo.Id}/file";
+    await db.SaveChangesAsync();
+    return Results.Created(photo.Url, new { photo.Id, photo.Url, photo.IsMain, photo.SortOrder });
 }).RequireAuthorization("admin").DisableAntiforgery();
-animals.MapDelete("/{id:int}/images/{imageId:int}", async (int id, int imageId, AppDbContext db, IWebHostEnvironment env) => {
+
+animals.MapDelete("/{id:int}/images/{imageId:int}", async (int id, int imageId, AppDbContext db) => {
     var image = await db.PetImages.SingleOrDefaultAsync(x => x.PetId == id && x.Id == imageId);
     if (image is null) return Results.NotFound();
     var wasMain = image.IsMain;
@@ -159,11 +233,6 @@ animals.MapDelete("/{id:int}/images/{imageId:int}", async (int id, int imageId, 
             replacement.IsMain = true;
             await db.SaveChangesAsync();
         }
-    }
-    if (Uri.TryCreate(image.Url, UriKind.Absolute, out var uri) && uri.AbsolutePath.StartsWith("/uploads/"))
-    {
-        var local = Path.Combine(env.ContentRootPath, "wwwroot", "uploads", Path.GetFileName(uri.AbsolutePath));
-        if (File.Exists(local)) File.Delete(local);
     }
     return Results.NoContent();
 }).RequireAuthorization("admin");
@@ -277,6 +346,47 @@ static void ApplyAnimal(Pet pet, AnimalRequest input)
     pet.AgeInMonths = input.Age * 12; pet.Gender = input.Gender;
     pet.Description = input.Description.Trim(); pet.Traits = input.Traits?.Trim() ?? "";
     pet.Status = input.IsAvailable ? "dostepny" : "niedostepny";
+}
+
+// Projekcja odczytuje wyłącznie metadane obrazów, bez ciężkiej kolumny ImageData.
+static IQueryable<Pet> AnimalMetadataQuery(IQueryable<Pet> query) => query.Select(p => new Pet
+{
+    Id = p.Id,
+    Name = p.Name,
+    Species = p.Species,
+    Breed = p.Breed,
+    AgeInMonths = p.AgeInMonths,
+    Gender = p.Gender,
+    Description = p.Description,
+    Traits = p.Traits,
+    Status = p.Status,
+    Images = p.Images.Select(i => new PetImage
+    {
+        Id = i.Id,
+        PetId = i.PetId,
+        Url = i.Url,
+        IsMain = i.IsMain,
+        SortOrder = i.SortOrder
+    }).ToList()
+});
+
+static bool TryImageContentType(byte[] bytes, string extension, out string contentType)
+{
+    contentType = "";
+    if (bytes.Length < 12) return false;
+    if ((extension is ".jpg" or ".jpeg") && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF)
+    {
+        contentType = "image/jpeg"; return true;
+    }
+    if (extension == ".png" && bytes.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }))
+    {
+        contentType = "image/png"; return true;
+    }
+    if (extension == ".webp" && Encoding.ASCII.GetString(bytes, 0, 4) == "RIFF" && Encoding.ASCII.GetString(bytes, 8, 4) == "WEBP")
+    {
+        contentType = "image/webp"; return true;
+    }
+    return false;
 }
 
 public record ImageOrderRequest(int[] ImageIds);

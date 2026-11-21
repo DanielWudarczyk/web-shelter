@@ -59,17 +59,28 @@ function listFrom(data) {
     return [];
 }
 
+// Pliki w Neon mają adres /api/animals/.../file.
+// Przy hostingu React i API będą miały różne domeny, więc używamy adresu API.
+function resolvePhotoUrl(url) {
+    if (!url) return '';
+    if (/^https?:\/\//i.test(url)) return url;
+    return new URL(url.startsWith('/') ? url : `/${url}`, API_BASE).href;
+}
+
 function imagesFor(animal) {
     const images = animal?.images ?? animal?.Images ?? [];
     if (images.length > 0) {
-        return [...images].sort((a, b) =>
+        return [...images].map(image => ({
+            ...image,
+            url: resolvePhotoUrl(image.url ?? image.Url)
+        })).sort((a, b) =>
             (a.sortOrder ?? a.SortOrder ?? 0) - (b.sortOrder ?? b.SortOrder ?? 0) ||
             (a.id ?? a.Id ?? 0) - (b.id ?? b.Id ?? 0)
         );
     }
     // Zgodność ze starymi rekordami: URL można wyświetlać, ale nie można go dodawać.
     const legacy = animal?.photoUrl ?? animal?.PhotoUrl;
-    return legacy ? [{ id: null, url: legacy, isMain: true, sortOrder: 0 }] : [];
+    return legacy ? [{ id: null, url: resolvePhotoUrl(legacy), isMain: true, sortOrder: 0 }] : [];
 }
 function imageFor(animal) {
     const photos = imagesFor(animal);
@@ -805,10 +816,11 @@ export default function App() {
                                         }
                                         onClick={() => setActivePhoto(index)}
                                     >
-                                        <img
-                                            src={photo.url}
-                                            alt={`Zdjęcie ${index + 1} zwierzęcia`}
-                                        />
+                                        <LoadingImage
+                                        key={photo.url}
+                                        src={photo.url}
+                                        alt={`Zdjęcie ${index + 1} zwierzęcia`}
+                                    />
                                     </button>
                                 ))}
                             </div>
@@ -902,7 +914,48 @@ export default function App() {
 }
 
 function AnimalCard({ animal, onDetails }) {
-    return <article className="animal-card"><div className="animal-image-wrap">{imageFor(animal) ? <img src={imageFor(animal)} alt={animal.name} loading="lazy" onError={(e) => { e.currentTarget.style.display = 'none'; }} /> : <div className="image-placeholder">🐾</div>}<span className="image-label">{animal.species === 'Dog' ? 'Pies' : animal.species === 'Cat' ? 'Kot' : animal.species}</span></div><div className="animal-card-body"><div><h3>{animal.name}</h3><p>{animal.age} {Number(animal.age) === 1 ? 'rok' : 'lat'}</p></div><button className="button primary full" onClick={() => onDetails(animal)}>Zobacz szczegóły</button></div></article>;
+    const photoUrl = imageFor(animal);
+
+    return (
+        <article className="animal-card">
+            <div className="animal-image-wrap">
+                {photoUrl ? (
+                    <LoadingImage
+                        key={photoUrl}
+                        src={photoUrl}
+                        alt={animal.name}
+                        className="animal-card-loading"
+                    />
+                ) : (
+                    <div className="image-placeholder">🐾</div>
+                )}
+
+                <span className="image-label">
+                    {animal.species === 'Dog'
+                        ? 'Pies'
+                        : animal.species === 'Cat'
+                            ? 'Kot'
+                            : animal.species}
+                </span>
+            </div>
+
+            <div className="animal-card-body">
+                <div>
+                    <h3>{animal.name}</h3>
+                    <p>
+                        {animal.age} {Number(animal.age) === 1 ? 'rok' : 'lat'}
+                    </p>
+                </div>
+
+                <button
+                    className="button primary full"
+                    onClick={() => onDetails(animal)}
+                >
+                    Zobacz szczegóły
+                </button>
+            </div>
+        </article>
+    );
 }
 
 function ApplicationTable({ items, admin, onOpen }) {
@@ -925,4 +978,35 @@ function Field({ label, name, value, onChange, type = 'text', required = false, 
     return <div className="field"><label htmlFor={name}>{label}</label><input id={name} name={name} type={type} min={min} value={value ?? ''} onChange={(e) => onChange(e.target.value)} required={required} placeholder={placeholder} /></div>;    ``
 }
 
+function LoadingImage({ src, alt, className = '' }) {
+    const [loaded, setLoaded] = useState(false);
+    const [failed, setFailed] = useState(false);
 
+    return (
+        <div className={`loading-image ${className}`}>
+            {!loaded && !failed && (
+                <div className="image-loading-message">
+                    <span className="image-spinner"></span>
+                    <span>Ładowanie zdjęcia...</span>
+                </div>
+            )}
+
+            {failed && (
+                <div className="image-loading-message">
+                    Nie udało się załadować zdjęcia
+                </div>
+            )}
+
+            {src && (
+                <img
+                    src={src}
+                    alt={alt}
+                    loading="lazy"
+                    style={{ opacity: loaded ? 1 : 0 }}
+                    onLoad={() => setLoaded(true)}
+                    onError={() => setFailed(true)}
+                />
+            )}
+        </div>
+    );
+}
