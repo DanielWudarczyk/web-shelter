@@ -3154,23 +3154,23 @@
     ]
   },
   "packageFolders": {
-    "C:\\Users\\djdan\\.nuget\\packages\\": {},
+    "C:\\Users\\asial\\.nuget\\packages\\": {},
     "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages": {}
   },
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "C:\\Users\\djdan\\Documents\\wat\\7. semestr\\SWBO\\web-shelter\\WebShelter.API\\WebShelter.API.csproj",
+      "projectUniqueName": "C:\\Users\\asial\\Desktop\\WAT\\IV rok\\web\\web-shelter\\WebShelter.API\\WebShelter.API.csproj",
       "projectName": "WebShelter.API",
-      "projectPath": "C:\\Users\\djdan\\Documents\\wat\\7. semestr\\SWBO\\web-shelter\\WebShelter.API\\WebShelter.API.csproj",
-      "packagesPath": "C:\\Users\\djdan\\.nuget\\packages\\",
-      "outputPath": "C:\\Users\\djdan\\Documents\\wat\\7. semestr\\SWBO\\web-shelter\\WebShelter.API\\obj\\",
+      "projectPath": "C:\\Users\\asial\\Desktop\\WAT\\IV rok\\web\\web-shelter\\WebShelter.API\\WebShelter.API.csproj",
+      "packagesPath": "C:\\Users\\asial\\.nuget\\packages\\",
+      "outputPath": "C:\\Users\\asial\\Desktop\\WAT\\IV rok\\web\\web-shelter\\WebShelter.API\\obj\\",
       "projectStyle": "PackageReference",
       "fallbackFolders": [
         "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
       ],
       "configFilePaths": [
-        "C:\\Users\\djdan\\AppData\\Roaming\\NuGet\\NuGet.Config",
+        "C:\\Users\\asial\\AppData\\Roaming\\NuGet\\NuGet.Config",
         "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.FallbackLocation.config",
         "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
       ],
@@ -3241,7 +3241,7 @@
             "privateAssets": "all"
           }
         },
-        "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\9.0.308/PortableRuntimeIdentifierGraph.json"
+        "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\9.0.310/PortableRuntimeIdentifierGraph.json"
       }
     }
   }
