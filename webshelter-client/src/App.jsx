@@ -765,7 +765,7 @@ export default function App() {
 
                     <div className="toolbar"><input type="search" placeholder="Szukaj po imieniu…" value={search} onChange={(e) => setSearch(e.target.value)} aria-label="Szukaj zwierząt" /><select value={speciesFilter} onChange={(e) => setSpeciesFilter(e.target.value)} aria-label="Filtruj według gatunku"><option value="">Wszystkie zwierzęta</option><option value="Dog">Psy</option><option value="Cat">Koty</option></select></div>
                     <section id="animal-list" className="animal-grid">{animals.map((animal) => <AnimalCard key={animal.id} animal={animal} onDetails={openAnimal} />)}</section>
-                    {!loading && animals.length === 0 && <EmptyState text="Nie znaleziono zwierząt. Zmień filtry lub sprawdź, czy backend zawiera dostępne profile." />}
+                    {!loading && animals.length === 0 && <EmptyState text="Nie znaleziono zwierząt." />}
                 </>}
 
                 {screen === 'animalDetail' && selectedAnimal && <>

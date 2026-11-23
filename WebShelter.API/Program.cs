@@ -12,12 +12,12 @@ using WebShelter.API.Services;
 var builder = WebApplication.CreateBuilder(args);
 var key = builder.Configuration["Jwt:Key"];
 if (string.IsNullOrWhiteSpace(key) || Encoding.UTF8.GetByteCount(key) < 32)
-    throw new InvalidOperationException("Skonfiguruj Jwt:Key (co najmniej 32 bajty) przez zmienną Jwt__Key lub user-secrets.");
+    throw new InvalidOperationException("Skonfiguruj Jwt:Key.");
 
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
 if (string.IsNullOrWhiteSpace(connectionString))
-    throw new InvalidOperationException("Brak ConnectionStrings:DefaultConnection. Ustaw NEON_CONNECTION_STRING w .env dla Dockera lub ConnectionStrings__DefaultConnection / user-secrets dla dotnet run.");
-// Neon.tech wymaga szyfrowanego połączenia TLS. Nie przechowuj hasła w appsettings.json.
+    throw new InvalidOperationException("Brak ConnectionStrings:DefaultConnection. ");
+// Neon.tech wymaga szyfrowanego połączenia TLS. 
 builder.Services.AddDbContext<AppDbContext>(opt => opt.UseNpgsql(connectionString));
 builder.Services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
 builder.Services.AddScoped<TokenService>();
@@ -46,58 +46,6 @@ app.UseAuthorization();
 if (app.Environment.IsDevelopment()) app.MapOpenApi();
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok" }));
 
-// Jednorazowa migracja starych zdjęć z folderu wwwroot/uploads do Neon.
-// Uruchom: dotnet run --launch-profile http -- --migrate-local-images
-if (args.Contains("--migrate-local-images", StringComparer.OrdinalIgnoreCase))
-{
-    using var migrationScope = app.Services.CreateScope();
-    var db = migrationScope.ServiceProvider.GetRequiredService<AppDbContext>();
-    var pending = await db.PetImages
-        .Where(i => i.ImageData == null)
-        .OrderBy(i => i.Id)
-        .ToListAsync();
-    int migrated = 0, missing = 0;
-    foreach (var photo in pending)
-    {
-        string pathname;
-        if (Uri.TryCreate(photo.Url, UriKind.Absolute, out var originalUri))
-            pathname = originalUri.AbsolutePath;
-        else pathname = photo.Url;
-        if (!pathname.StartsWith("/uploads/", StringComparison.OrdinalIgnoreCase))
-        {
-            Console.WriteLine($"POMINIĘTO ID={photo.Id}: URL nie wskazuje na /uploads/");
-            missing++;
-            continue;
-        }
-        var filename = Path.GetFileName(pathname);
-        if (string.IsNullOrWhiteSpace(filename)) { missing++; continue; }
-        var localPath = Path.Combine(app.Environment.ContentRootPath, "wwwroot", "uploads", filename);
-        if (!File.Exists(localPath))
-        {
-            Console.WriteLine($"BRAK PLIKU ID={photo.Id}: {filename}");
-            missing++;
-            continue;
-        }
-        var bytes = await File.ReadAllBytesAsync(localPath);
-        var extension = Path.GetExtension(filename).ToLowerInvariant();
-        if (bytes.Length < 12 || !TryImageContentType(bytes, extension, out var type))
-        {
-            Console.WriteLine($"POMINIĘTO ID={photo.Id}: błędny typ obrazu");
-            missing++;
-            continue;
-        }
-        photo.ImageData = bytes;
-        photo.ContentType = type;
-        photo.Url = $"/api/animals/{photo.PetId}/images/{photo.Id}/file";
-        await db.SaveChangesAsync();
-        migrated++;
-        Console.WriteLine($"PRZENIESIONO ID={photo.Id} ({bytes.Length} B)");
-    }
-    Console.WriteLine($"Migracja zakończona: przeniesiono {migrated}; wymagają uwagi {missing}.");
-    return;
-}
-
-// Baza Neon: EnsureCreated tylko dla nowej, pustej bazy. Istniejących tabel nie modyfikujemy automatycznie.
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -117,6 +65,7 @@ using (var scope = app.Services.CreateScope())
 }
 
 var auth = app.MapGroup("/api/auth");
+
 auth.MapPost("/register", async (RegisterRequest input, AppDbContext db, IPasswordHasher<User> hasher, TokenService tokens) => {
     if (!Valid(input, out var error)) return Results.BadRequest(new { message = error });
     var email = input.Email.Trim().ToLowerInvariant();
@@ -127,6 +76,7 @@ auth.MapPost("/register", async (RegisterRequest input, AppDbContext db, IPasswo
     try { await db.SaveChangesAsync(); } catch (DbUpdateException) { return Results.Conflict(new { message = "Ten adres e-mail jest już zajęty." }); }
     return Results.Ok(new { token = tokens.Create(user), user = new { user.Id, user.Email, user.FirstName, user.LastName, user.Role } });
 });
+
 auth.MapPost("/login", async (LoginRequest input, AppDbContext db, IPasswordHasher<User> hasher, TokenService tokens) => {
     if (!Valid(input, out var error)) return Results.BadRequest(new { message = error });
     var user = await db.Users.SingleOrDefaultAsync(u => u.Email == input.Email.Trim().ToLowerInvariant());
@@ -136,6 +86,7 @@ auth.MapPost("/login", async (LoginRequest input, AppDbContext db, IPasswordHash
 });
 
 var animals = app.MapGroup("/api/animals");
+
 animals.MapGet("/", async (AppDbContext db, string? search, string? species, bool availableOnly = true) => {
     var q = db.Pets.AsNoTracking().AsQueryable();
     if (availableOnly) q = q.Where(p => p.Status == "dostepny");
@@ -144,22 +95,26 @@ animals.MapGet("/", async (AppDbContext db, string? search, string? species, boo
     var data = await AnimalMetadataQuery(q.OrderBy(p => p.Id)).ToListAsync();
     return Results.Ok(data.Select(ApiDtos.Animal));
 });
+
 animals.MapGet("/{id:int}", async (int id, AppDbContext db) => {
     var pet = await AnimalMetadataQuery(db.Pets.AsNoTracking().Where(p => p.Id == id)).SingleOrDefaultAsync();
     return pet is null ? Results.NotFound(new { message = "Nie znaleziono zwierzęcia." }) : Results.Ok(ApiDtos.Animal(pet));
 });
+
 animals.MapPost("/", async (AnimalRequest input, AppDbContext db) => {
     if (!Valid(input, out var err) || !ValidAnimal(input)) return Results.BadRequest(new { message = err ?? "Niepoprawne dane zwierzęcia." });
     var pet = new Pet(); ApplyAnimal(pet, input);
     db.Pets.Add(pet); await db.SaveChangesAsync();
     return Results.Created($"/api/animals/{pet.Id}", ApiDtos.Animal(pet));
 }).RequireAuthorization("admin");
+
 animals.MapPut("/{id:int}", async (int id, AnimalRequest input, AppDbContext db) => {
     if (!Valid(input, out var err) || !ValidAnimal(input)) return Results.BadRequest(new { message = err ?? "Niepoprawne dane zwierzęcia." });
     var pet = await db.Pets.Include(p => p.Images).SingleOrDefaultAsync(p => p.Id == id);
     if (pet is null) return Results.NotFound(new { message = "Nie znaleziono zwierzęcia." });
     ApplyAnimal(pet, input); await db.SaveChangesAsync(); return Results.Ok(ApiDtos.Animal(pet));
 }).RequireAuthorization("admin");
+
 animals.MapDelete("/{id:int}", async (int id, AppDbContext db) => {
     var pet = await db.Pets.Include(p => p.Images).SingleOrDefaultAsync(p => p.Id == id);
     if (pet is null) return Results.NotFound();
@@ -167,8 +122,8 @@ animals.MapDelete("/{id:int}", async (int id, AppDbContext db) => {
         return Results.Conflict(new { message = "Zwierzę ma historię zgłoszeń. Ustaw je jako niedostępne zamiast usuwać." });
     db.Pets.Remove(pet); await db.SaveChangesAsync(); return Results.NoContent();
 }).RequireAuthorization("admin");
-// Odczyt oryginalnego zdjęcia przechowywanego w PostgreSQL (bytea).
-// API zwraca metadane osobno, żeby lista zwierząt nie pobierała całych plików.
+
+// Odczyt oryginalnego zdjęcia przechowywanego w PostgreSQL 
 animals.MapGet("/{id:int}/images/{imageId:int}/file", async (int id, int imageId, AppDbContext db) => {
     var image = await db.PetImages.AsNoTracking()
         .Where(x => x.PetId == id && x.Id == imageId)
@@ -179,7 +134,7 @@ animals.MapGet("/{id:int}/images/{imageId:int}/file", async (int id, int imageId
         enableRangeProcessing: true);
 }).AllowAnonymous();
 
-// Dodawanie zdjęć: bajty są przechowywane w Neon, bez plików w wwwroot/uploads.
+// Dodawanie zdjęć
 animals.MapPost("/{id:int}/images", async (int id, IFormFile file, AppDbContext db) => {
     if (!await db.Pets.AnyAsync(p => p.Id == id)) return Results.NotFound();
     var count = await db.PetImages.CountAsync(i => i.PetId == id);
@@ -264,6 +219,7 @@ animals.MapPut("/{id:int}/images/{imageId:int}/main", async (int id, int imageId
 }).RequireAuthorization("admin");
 
 var applications = app.MapGroup("/api/adoption-applications").RequireAuthorization();
+
 applications.MapPost("/", async (ApplicationRequest input, ClaimsPrincipal principal, AppDbContext db) => {
     if (!Valid(input, out var err) || input.AnimalId <= 0 || string.IsNullOrWhiteSpace(input.Phone) || string.IsNullOrWhiteSpace(input.HomeType))
         return Results.BadRequest(new { message = err ?? "Uzupełnij wszystkie pola zgłoszenia." });
@@ -279,6 +235,7 @@ applications.MapPost("/", async (ApplicationRequest input, ClaimsPrincipal princ
     application.Pet = pet;
     return Results.Created($"/api/adoption-applications/{application.Id}", ApiDtos.Application(application));
 });
+
 applications.MapGet("/my", async (ClaimsPrincipal principal, AppDbContext db) => {
     var userId = UserId(principal);
 
@@ -289,16 +246,19 @@ applications.MapGet("/my", async (ClaimsPrincipal principal, AppDbContext db) =>
 
     return Results.Ok(all.Select(ApiDtos.Application));
 });
+
 applications.MapGet("/", async (AppDbContext db) => {
     var all = await ApplicationQuery(db).OrderByDescending(a => a.SubmittedAt).ToListAsync();
     return Results.Ok(all.Select(ApiDtos.Application));
 }).RequireAuthorization("admin");
+
 applications.MapGet("/{id:int}", async (int id, ClaimsPrincipal principal, AppDbContext db) => {
     var a = await ApplicationQuery(db).SingleOrDefaultAsync(a => a.Id == id);
     if (a is null) return Results.NotFound();
     if (!principal.IsInRole("admin") && a.UserId != UserId(principal)) return Results.Forbid();
     return Results.Ok(ApiDtos.Application(a));
 });
+
 applications.MapPatch("/{id:int}/status", async (int id, StatusRequest input, AppDbContext db) => {
     if (input.Status is not ("Pending" or "UnderReview" or "Approved" or "Rejected"))
         return Results.BadRequest(new { message = "Nieznany status. Wybierz Pending, UnderReview, Approved lub Rejected." });
